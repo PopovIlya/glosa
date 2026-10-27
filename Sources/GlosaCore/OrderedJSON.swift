@@ -1,8 +1,8 @@
 import Foundation
 
 /// JSON that keeps key order and number spelling, so editing a deck changes only the lines we touch.
-/// `vocab.json` is also written by Python scripts; `pretty()` prints exactly like
-/// `json.dumps(indent=2, ensure_ascii=False)`.
+/// `vocab.json` is also written by Python scripts; `pretty(indent:)` prints exactly like
+/// `json.dumps(indent=N, ensure_ascii=False)`.
 public indirect enum JSONValue: Equatable, Sendable {
     public struct Member: Equatable, Sendable {
         public var key: String
@@ -41,34 +41,34 @@ public indirect enum JSONValue: Equatable, Sendable {
 
     // MARK: Printing
 
-    public func pretty() -> String {
+    public func pretty(indent: String = "  ") -> String {
         var out = ""
-        write(to: &out, level: 0)
+        write(to: &out, level: 0, indent: indent)
         return out
     }
 
-    private func write(to out: inout String, level: Int) {
+    private func write(to out: inout String, level: Int, indent: String) {
         switch self {
         case .object(let members):
             if members.isEmpty { out += "{}"; return }
             out += "{\n"
             for (i, m) in members.enumerated() {
-                out += String(repeating: "  ", count: level + 1)
+                out += String(repeating: indent, count: level + 1)
                 JSONValue.quote(m.key, into: &out)
                 out += ": "
-                m.value.write(to: &out, level: level + 1)
+                m.value.write(to: &out, level: level + 1, indent: indent)
                 out += i == members.count - 1 ? "\n" : ",\n"
             }
-            out += String(repeating: "  ", count: level) + "}"
+            out += String(repeating: indent, count: level) + "}"
         case .array(let items):
             if items.isEmpty { out += "[]"; return }
             out += "[\n"
             for (i, item) in items.enumerated() {
-                out += String(repeating: "  ", count: level + 1)
-                item.write(to: &out, level: level + 1)
+                out += String(repeating: indent, count: level + 1)
+                item.write(to: &out, level: level + 1, indent: indent)
                 out += i == items.count - 1 ? "\n" : ",\n"
             }
-            out += String(repeating: "  ", count: level) + "]"
+            out += String(repeating: indent, count: level) + "]"
         case .string(let s): JSONValue.quote(s, into: &out)
         case .number(let n): out += n
         case .bool(let b): out += b ? "true" : "false"
@@ -92,6 +92,14 @@ public indirect enum JSONValue: Equatable, Sendable {
             }
         }
         out += "\""
+    }
+
+    /// The indent a pretty-printed file uses: the leading spaces of its second line ("  " if there are none).
+    public static func indentUnit(of text: String) -> String {
+        let lines = text.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false)
+        guard lines.count > 1 else { return "  " }
+        let unit = lines[1].prefix { $0 == " " || $0 == "\t" }
+        return unit.isEmpty ? "  " : String(unit)
     }
 
     // MARK: Parsing

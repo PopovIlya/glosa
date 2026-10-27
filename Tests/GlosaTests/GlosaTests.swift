@@ -34,7 +34,8 @@ final class OrderedJSONTests: XCTestCase {
     func testRealSpanishDeckRoundTrips() throws {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Claude/spanish/vocab.json")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { throw XCTSkip("no deck on this Mac") }
-        XCTAssertEqual(try JSONValue.parse(text).pretty(), text)
+        let printed = try JSONValue.parse(text).pretty(indent: JSONValue.indentUnit(of: text))
+        XCTAssertEqual(printed + (text.hasSuffix("\n") ? "\n" : ""), text)
     }
 }
 
@@ -87,6 +88,15 @@ final class VocabStoreTests: XCTestCase {
         try store.remove(id: 8)
         try store.remove(id: 7) // a lesson card: stays
         XCTAssertEqual(store.count, 1)
+    }
+
+    func testKeepsTheFilesIndent() throws {
+        let oneSpace = "{\n \"words\": []\n}\n"
+        try oneSpace.write(to: url, atomically: true, encoding: .utf8)
+        try VocabStore(url: url, language: .es).add([VocabItem(term: "hola", ru: "привет", tag: "frases", note: "")])
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.hasPrefix("{\n \"words\": [\n  {\n   \"id\": 1,"), text)
+        XCTAssertTrue(text.hasSuffix("}\n"))
     }
 
     func testCreatesEnglishDeck() throws {

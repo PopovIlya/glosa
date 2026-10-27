@@ -123,7 +123,11 @@ public struct VocabStore: Sendable {
 
     private func save(_ root: JSONValue) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data(root.pretty().utf8).write(to: url, options: .atomic)
+        // Keep the file's own indent and final newline: other tools write this deck too.
+        let existing = try? String(contentsOf: url, encoding: .utf8)
+        var text = root.pretty(indent: existing.map(JSONValue.indentUnit) ?? "  ")
+        if existing?.hasSuffix("\n") == true { text += "\n" }
+        try Data(text.utf8).write(to: url, options: .atomic)
     }
 
     static func dayString(_ date: Date) -> String {

@@ -110,6 +110,12 @@ public struct ClaudeCLI: ClaudeBackend {
         // The text goes through stdin, so a selection starting with "-" is never read as a flag.
         process.arguments = ["-p", "--model", model, "--tools", "", "--strict-mcp-config", "--no-session-persistence",
                              "--system-prompt", system, "--output-format", "json", "--json-schema", schema]
+        // Claude Code looks around its working folder at startup, and macOS asks for Downloads, Pictures and the
+        // like in Glosa's name. An empty folder of its own leaves it nothing to look at.
+        let workdir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Glosa/cli", isDirectory: true)
+        try? FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
+        process.currentDirectoryURL = workdir
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
         process.environment = env
