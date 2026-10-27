@@ -5,7 +5,7 @@ let package = Package(
     name: "Glosa",
     platforms: [.macOS(.v14)],
     targets: [
-        .target(name: "GlosaCore", path: "Sources/GlosaCore"),
+        .target(name: "GlosaCore", path: "Sources/GlosaCore", resources: [.copy("Resources")]),
         .executableTarget(name: "Glosa", dependencies: ["GlosaCore"], path: "Sources/Glosa"),
         .testTarget(name: "GlosaTests", dependencies: ["GlosaCore"], path: "Tests/GlosaTests"),
     ]

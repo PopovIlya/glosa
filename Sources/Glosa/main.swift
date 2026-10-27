@@ -24,10 +24,26 @@ final class TranslatorPanel: NSPanel {
         }
         needsPlacement = !setFrameUsingName("GlosaPanel")
         setFrameAutosaveName("GlosaPanel")
-        contentView = NSHostingView(rootView: rootView)
+        let host = NSHostingView(rootView: rootView)
+        // Only a minimum size: by default the hosting view also pins the window to its content's size,
+        // which makes the panel impossible to resize by its edges.
+        host.sizingOptions = [.minSize]
+        contentView = host
     }
 
     override var canBecomeKey: Bool { true }
+
+    private static let sizes = [NSSize(width: 440, height: 600), NSSize(width: 580, height: 780), NSSize(width: 760, height: 960)]
+
+    /// Steps through small, medium and large, keeping the top-right corner where it is.
+    func nextSize() {
+        let current = Self.sizes.lastIndex { $0.width <= frame.width + 1 } ?? -1
+        var size = Self.sizes[(current + 1) % Self.sizes.count]
+        if let screen = screen?.visibleFrame { size.height = min(size.height, screen.height - 20) }
+        let topRight = NSPoint(x: frame.maxX, y: frame.maxY)
+        setFrame(NSRect(x: topRight.x - size.width, y: topRight.y - size.height, width: size.width, height: size.height),
+                 display: true, animate: true)
+    }
 
     func showTopRight() {
         if needsPlacement, let screen = NSScreen.main?.visibleFrame {
@@ -47,7 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--demo") { DemoBackend.prepare() }
-        panel = TranslatorPanel(rootView: TranslatorView(state: state) { [weak self] in self?.panel.orderOut(nil) })
+        panel = TranslatorPanel(rootView: TranslatorView(state: state,
+                                                     onClose: { [weak self] in self?.panel.orderOut(nil) },
+                                                     onResize: { [weak self] in self?.panel.nextSize() }))
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "Glosa")
         buildMenu()

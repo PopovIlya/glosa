@@ -20,10 +20,11 @@ public enum ClaudeError: LocalizedError {
     }
 }
 
-/// One structured request to Claude: system prompt, user message, JSON schema in; schema-valid JSON out.
+/// One request to Claude: system prompt and user message in. With a JSON schema the answer is schema-valid
+/// JSON; without one it is plain text, which is several times faster through the CLI.
 public protocol ClaudeBackend: Sendable {
     var label: String { get }
-    func complete(system: String, user: String, schema: String) async throws -> Data
+    func complete(system: String, user: String, schema: String?) async throws -> Data
 }
 
 /// Messages API over HTTPS with structured outputs. Used when ANTHROPIC_API_KEY is set.
@@ -40,15 +41,18 @@ public struct AnthropicAPI: ClaudeBackend {
         self.model = model
     }
 
-    public func complete(system: String, user: String, schema: String) async throws -> Data {
-        let schemaObject = try JSONSerialization.jsonObject(with: Data(schema.utf8))
+    public func complete(system: String, user: String, schema: String?) async throws -> Data {
+        var outputConfig: [String: Any] = ["effort": "low"]
+        if let schema {
+            outputConfig["format"] = ["type": "json_schema", "schema": try JSONSerialization.jsonObject(with: Data(schema.utf8))]
+        }
         var body: [String: Any] = [
             "model": model,
             "max_tokens": 16000,
             "system": system,
             "messages": [["role": "user", "content": user]],
             // A dictionary lookup needs little thinking; low effort keeps the popup quick.
-            "output_config": ["effort": "low", "format": ["type": "json_schema", "schema": schemaObject]],
+            "output_config": outputConfig,
         ]
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
         request.httpMethod = "POST"
@@ -104,12 +108,12 @@ public struct ClaudeCLI: ClaudeBackend {
         return paths.map(URL.init(fileURLWithPath:)).first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
-    public func complete(system: String, user: String, schema: String) async throws -> Data {
+    public func complete(system: String, user: String, schema: String?) async throws -> Data {
         let process = Process()
         process.executableURL = executable
         // The text goes through stdin, so a selection starting with "-" is never read as a flag.
         process.arguments = ["-p", "--model", model, "--tools", "", "--strict-mcp-config", "--no-session-persistence",
-                             "--system-prompt", system, "--output-format", "json", "--json-schema", schema]
+                             "--system-prompt", system, "--output-format", "json"] + (schema.map { ["--json-schema", $0] } ?? [])
         // Claude Code looks around its working folder at startup, and macOS asks for Downloads, Pictures and the
         // like in Glosa's name. An empty folder of its own leaves it nothing to look at.
         let workdir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -136,11 +140,11 @@ public struct ClaudeCLI: ClaudeBackend {
             let err = String(decoding: errData, as: UTF8.self)
             throw ClaudeError.cli(err.isEmpty ? "exit \(process.terminationStatus)" : err)
         }
-        return try Self.result(from: output)
+        return try Self.result(from: output, plain: schema == nil)
     }
 
     /// The structured result from `--output-format json` output.
-    static func result(from data: Data) throws -> Data {
+    static func result(from data: Data, plain: Bool = false) throws -> Data {
         guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ClaudeError.cli(String(decoding: data.prefix(300), as: UTF8.self))
         }
@@ -151,6 +155,7 @@ public struct ClaudeCLI: ClaudeBackend {
             return try JSONSerialization.data(withJSONObject: structured)
         }
         guard var text = envelope["result"] as? String else { throw ClaudeError.badOutput("no result") }
+        if plain { return Data(text.utf8) }
         // Without schema support the model may wrap JSON in a code fence.
         if let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}") { text = String(text[start...end]) }
         return Data(text.utf8)
@@ -180,6 +185,22 @@ public struct Lexicon: Sendable {
 
     public func translate(_ text: String) async throws -> Lookup {
         let data = try await backend.complete(system: Prompt.translateSystem, user: Prompt.translateUser(text),
+                                              schema: Prompt.translationSchema)
+        return try Self.decode(Lookup.self, data)
+    }
+
+    /// The translation, a note for an idiom, and short entries for `unknown` words: plain text, no schema,
+    /// a few seconds even through the CLI.
+    public func quickTranslation(_ text: String, unknown: [String] = []) async throws -> Prompt.QuickReply {
+        let user = unknown.isEmpty ? Prompt.translateUser(text) : Prompt.phraseUser(text, unknown: unknown)
+        let data = try await backend.complete(system: Prompt.quickSystem, user: user, schema: nil)
+        return Prompt.parseQuick(String(decoding: data, as: UTF8.self))
+    }
+
+    /// A phrase whose other words the dictionary already explained: the translation, a note, and entries
+    /// for `unknown` only, which keeps the answer short.
+    public func translatePhrase(_ text: String, unknown: [String]) async throws -> Lookup {
+        let data = try await backend.complete(system: Prompt.translateSystem, user: Prompt.phraseUser(text, unknown: unknown),
                                               schema: Prompt.translationSchema)
         return try Self.decode(Lookup.self, data)
     }

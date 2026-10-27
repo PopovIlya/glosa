@@ -11,8 +11,9 @@ struct DemoBackend: ClaudeBackend {
         setenv("GLOSA_VOCAB_EN", dir.appendingPathComponent("en.json").path, 1)
     }
 
-    func complete(system: String, user: String, schema: String) async throws -> Data {
+    func complete(system: String, user: String, schema: String?) async throws -> Data {
         try await Task.sleep(nanoseconds: 600_000_000)
+        guard schema != nil else { return Data("Мы встаём очень рано".utf8) }
         return Data((schema == Prompt.conjugationSchema ? Self.conjugation : Self.phrase).utf8)
     }
 

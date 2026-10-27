@@ -19,12 +19,19 @@ final class AppState: ObservableObject {
 
     @Published var phase: Phase = .idle
     @Published var query = ""
-    /// Deck outcome per word index of the current result; nil = not in the deck.
-    @Published var saved: [Int: VocabStore.Outcome] = [:]
+    /// Deck outcome per lemma of the current result; missing = not in the deck.
+    @Published var saved: [String: VocabStore.Outcome] = [:]
     @Published var conjugations: [String: ConjugationState] = [:]
-    @Published var openConjugation: Set<Int> = []
+    @Published var openConjugation: Set<String> = []
     @Published var deckError: String?
+    /// What Claude is still doing, shown with a spinner; nil when nothing is pending.
+    @Published var waitingFor: String?
+    @Published var claudeError: String?
+    /// Who answered: the offline dictionary, Claude, or both.
+    @Published var answeredBy = ""
 
+    private var hybrid: Hybrid?
+    private let hybridLoad: Task<Hybrid, Never>
     private let lexicon = CommandLine.arguments.contains("--demo") ? Lexicon(backend: DemoBackend()) : Lexicon.fromEnvironment()
     private var task: Task<Void, Never>?
     private let speech = AVSpeechSynthesizer()
@@ -32,7 +39,13 @@ final class AppState: ObservableObject {
     /// Longer selections take too long to break down word by word.
     static let maxLength = 400
 
-    var backendLabel: String { lexicon?.backend.label ?? "нет доступа к Claude" }
+    init() {
+        let lexicon = self.lexicon
+        // Unpacking the dictionaries takes about a second; do it off the main thread at launch.
+        hybridLoad = Task.detached(priority: .userInitiated) { Hybrid(offline: OfflineLexicon.load(), lexicon: lexicon) }
+    }
+
+    var backendLabel: String { answeredBy.isEmpty ? (lexicon?.backend.label ?? "нет доступа к Claude") : answeredBy }
 
     func ask(_ raw: String) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -41,60 +54,97 @@ final class AppState: ObservableObject {
             phase = .error("Слишком длинный текст (\(text.count) знаков). Выдели до \(Self.maxLength).")
             return
         }
-        guard let lexicon else { phase = .error(ClaudeError.noBackend.localizedDescription); return }
         query = text
         task?.cancel()
         phase = .loading(text)
         saved = [:]
         openConjugation = []
         deckError = nil
+        claudeError = nil
+        waitingFor = nil
+        answeredBy = ""
         task = Task {
+            let hybrid = await hybridLoad.value
+            self.hybrid = hybrid
+            guard !Task.isCancelled else { return }
+            if let cached = hybrid.cached(text) {
+                show(cached, source: text, by: "из кэша")
+                return
+            }
+            let local = hybrid.local(text)
+            let claude = lexicon?.backend.label ?? "Claude"
+            if let local {
+                show(local.lookup, source: text, by: "словарь Wiktionary")
+                if local.complete { return }
+                waitingFor = local.unknown.isEmpty ? "Claude переводит фразу…"
+                    : "Claude переводит фразу и объясняет: \(local.unknown.joined(separator: ", "))…"
+            } else {
+                waitingFor = "Claude ищет…"
+            }
+            defer { if !Task.isCancelled { waitingFor = nil } }
             do {
-                let result = try await lexicon.translate(text)
+                // One plain-text request: the translation and entries for the words the dictionary lacks.
+                let result = try await hybrid.complete(text, local: local)
                 guard !Task.isCancelled else { return }
-                phase = .result(source: text, result)
-                saveToDeck(result, source: text)
-                // A looked-up verb is likely to get its table opened; start it now, it takes a while.
-                if result.kind == .word, let verb = result.words.first, verb.isVerb, result.language != .other {
-                    loadConjugation(verb.lemma, language: result.language)
-                }
+                show(result, source: text, by: local == nil ? claude : "словарь + \(claude)")
             } catch {
                 guard !Task.isCancelled else { return }
-                phase = .error(error.localizedDescription)
+                if local == nil { phase = .error(error.localizedDescription) } else { claudeError = error.localizedDescription }
             }
+        }
+    }
+
+    private func show(_ result: Lookup, source: String, by: String) {
+        phase = .result(source: source, result)
+        answeredBy = by
+        saveToDeck(result, source: source)
+        // A looked-up verb is likely to get its table opened; start it now.
+        if result.kind == .word, let verb = result.words.first, verb.isVerb, result.language != .other {
+            loadConjugation(verb.lemma, language: result.language)
         }
     }
 
     func show(error: String) { phase = .error(error) }
 
+    var currentWords: [WordEntry] {
+        if case .result(_, let result) = phase { return result.words } else { return [] }
+    }
+
     // MARK: Deck
 
     /// Every content word goes to its language's deck; a single word goes even if it is a function word.
+    /// Words already handled for this selection are skipped, so a phrase can be saved in two steps.
     private func saveToDeck(_ result: Lookup, source: String) {
         guard let store = VocabStore.forLanguage(result.language) else { return }
-        let indices = result.words.indices.filter { result.kind == .word || !result.words[$0].isFunctionWord }
+        let words = result.words.filter { (result.kind == .word || !$0.isFunctionWord) && saved[$0.lemma] == nil }
         let context = result.kind == .phrase && source.count <= 120 ? source : nil
         do {
-            let outcomes = try store.add(indices.map { VocabItem(result.words[$0], language: result.language, context: context) })
-            for (i, outcome) in zip(indices, outcomes) { saved[i] = outcome }
+            let outcomes = try store.add(words.map { VocabItem($0, language: result.language, context: context) })
+            for (w, outcome) in zip(words, outcomes) { saved[w.lemma] = outcome }
         } catch {
             deckError = "Не записал в словарь: \(error.localizedDescription)"
         }
     }
 
+    func savedOutcome(_ index: Int) -> VocabStore.Outcome? {
+        currentWords.indices.contains(index) ? saved[currentWords[index].lemma] : nil
+    }
+
     /// Adds a word, or takes back a card Glosa has just added.
     func toggleSaved(_ index: Int) {
-        guard case .result(let source, let result) = phase, let store = VocabStore.forLanguage(result.language) else { return }
+        guard case .result(let source, let result) = phase, result.words.indices.contains(index),
+              let store = VocabStore.forLanguage(result.language) else { return }
+        let word = result.words[index]
         do {
-            switch saved[index] {
+            switch saved[word.lemma] {
             case .added(let id)?:
                 try store.remove(id: id)
-                saved[index] = nil
+                saved[word.lemma] = nil
             case .duplicate?:
                 break
             case nil:
                 let context = result.kind == .phrase && source.count <= 120 ? source : nil
-                saved[index] = try store.add([VocabItem(result.words[index], language: result.language, context: context)]).first
+                saved[word.lemma] = try store.add([VocabItem(word, language: result.language, context: context)]).first
             }
         } catch {
             deckError = "Не записал в словарь: \(error.localizedDescription)"
@@ -113,22 +163,27 @@ final class AppState: ObservableObject {
 
     // MARK: Conjugation
 
+    func isConjugationOpen(_ index: Int) -> Bool {
+        currentWords.indices.contains(index) && openConjugation.contains(currentWords[index].lemma)
+    }
+
     func toggleConjugation(_ index: Int) {
-        guard case .result(_, let result) = phase else { return }
-        if openConjugation.contains(index) { openConjugation.remove(index); return }
-        openConjugation.insert(index)
-        loadConjugation(result.words[index].lemma, language: result.language)
+        guard case .result(_, let result) = phase, result.words.indices.contains(index) else { return }
+        let lemma = result.words[index].lemma
+        if openConjugation.contains(lemma) { openConjugation.remove(lemma); return }
+        openConjugation.insert(lemma)
+        loadConjugation(lemma, language: result.language)
     }
 
     private func loadConjugation(_ verb: String, language: Lang) {
         let key = "\(language.rawValue):\(verb)"
         if case .loaded? = conjugations[key] { return }
         if case .loading? = conjugations[key] { return }
-        guard let lexicon else { return }
         conjugations[key] = .loading
         Task {
+            let hybrid = await hybridLoad.value
             do {
-                conjugations[key] = .loaded(try await lexicon.conjugate(verb, language: language))
+                conjugations[key] = .loaded(try await hybrid.conjugate(verb, language: language))
             } catch {
                 conjugations[key] = .failed(error.localizedDescription)
             }

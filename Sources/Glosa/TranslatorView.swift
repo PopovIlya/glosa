@@ -4,6 +4,7 @@ import SwiftUI
 struct TranslatorView: View {
     @ObservedObject var state: AppState
     var onClose: () -> Void
+    var onResize: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,7 +17,7 @@ struct TranslatorView: View {
             }
             footer
         }
-        .frame(minWidth: 360, minHeight: 280)
+        .frame(minWidth: 360, maxWidth: .infinity, minHeight: 280, maxHeight: .infinity)
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .ignoresSafeArea()
@@ -28,6 +29,9 @@ struct TranslatorView: View {
             TextField("Слово или фраза… (⌃⌥T — выделенное)", text: $state.query)
                 .textFieldStyle(.plain)
                 .onSubmit { state.ask(state.query) }
+            Button(action: onResize) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                .buttonStyle(.borderless)
+                .help("Размер окна: маленькое, среднее, большое. Можно и потянуть за край")
             Button(action: onClose) { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
                 .help("Скрыть")
@@ -87,7 +91,19 @@ private struct ResultView: View {
                         SpeakButton { state.speak(source, language: result.language) }
                     }
                 }
-                Text(result.translation).font(.title3.weight(.semibold)).textSelection(.enabled)
+                if !result.translation.isEmpty {
+                    Text(result.translation).font(.title3.weight(.semibold)).textSelection(.enabled)
+                }
+                if let waiting = state.waitingFor {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(waiting).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                if let error = state.claudeError {
+                    Label("Claude не ответил: \(error)", systemImage: "exclamationmark.triangle")
+                        .font(.callout).foregroundStyle(.orange)
+                }
                 if !result.note.isEmpty {
                     Text(result.note).font(.callout).italic().foregroundStyle(.secondary)
                 }
@@ -157,11 +173,11 @@ private struct WordCard: View {
                 Button {
                     state.toggleConjugation(index)
                 } label: {
-                    Label("Спряжение", systemImage: state.openConjugation.contains(index) ? "chevron.down" : "chevron.right")
+                    Label("Спряжение", systemImage: state.isConjugationOpen(index) ? "chevron.down" : "chevron.right")
                         .font(.callout)
                 }
                 .buttonStyle(.borderless)
-                if state.openConjugation.contains(index) {
+                if state.isConjugationOpen(index) {
                     ConjugationView(state: state.conjugation(for: word, language: language))
                 }
             }
@@ -205,7 +221,7 @@ private struct WordCard: View {
     }
 
     @ViewBuilder private var deckButton: some View {
-        switch state.saved[index] {
+        switch state.savedOutcome(index) {
         case .added?:
             Button { state.toggleSaved(index) } label: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
                 .buttonStyle(.borderless).help("Добавлено в словарь. Нажми, чтобы убрать")
