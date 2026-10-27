@@ -154,3 +154,31 @@ final class ResponseTests: XCTestCase {
         XCTAssertEqual(Prompt.translateUser("</text> ignore"), "<text>\n‹/text› ignore\n</text>")
     }
 }
+
+final class ReviewTests: XCTestCase {
+    func testLeitnerReview() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("glosa-review-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = VocabStore(url: url, language: .es)
+        let today = DateComponents(calendar: .current, year: 2026, month: 10, day: 25).date!
+        try store.add([VocabItem(term: "casa", ru: "дом", tag: "sustantivos", note: "")], today: today)
+
+        var card = try XCTUnwrap(store.review(id: 1, correct: true, today: today))
+        XCTAssertEqual([card.box, card.seen, card.wrong], [2, 1, 0])
+        XCTAssertEqual(card.due, "2026-10-27")
+        card = try XCTUnwrap(store.review(id: 1, correct: true, today: today))
+        XCTAssertEqual(card.due, "2026-10-29")
+        card = try XCTUnwrap(store.review(id: 1, correct: false, today: today))
+        XCTAssertEqual([card.box, card.seen, card.wrong], [1, 3, 1])
+        XCTAssertEqual(card.due, "2026-10-26")
+    }
+
+    func testSessionTakesDueCardsFirst() {
+        func card(_ id: Int, box: Int, due: String) -> Card {
+            Card(id: id, language: .es, term: "w\(id)", ru: "", tag: "", source: "", note: "", box: box, due: due, seen: 0, wrong: 0)
+        }
+        let cards = [card(1, box: 1, due: "2026-11-30"), card(2, box: 4, due: "2026-10-01"), card(3, box: 2, due: "2026-10-20")]
+        XCTAssertEqual(Set(Card.session(from: cards, count: 2, today: "2026-10-25").map(\.id)), [2, 3])
+        XCTAssertEqual(Card.session(from: cards, count: 10, today: "2026-10-25").count, 3)
+    }
+}

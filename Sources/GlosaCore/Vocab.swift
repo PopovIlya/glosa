@@ -27,6 +27,37 @@ public struct VocabItem: Equatable, Sendable {
     }
 }
 
+/// A card as stored in a deck.
+public struct Card: Equatable, Sendable {
+    public var id: Int
+    public var language: Lang
+    public var term: String
+    public var ru: String
+    public var tag: String
+    public var source: String
+    public var note: String
+    public var box: Int
+    public var due: String
+    public var seen: Int
+    public var wrong: Int
+
+    /// Unique across both decks (ids repeat between them).
+    public var key: String { "\(language.rawValue)-\(id)" }
+
+    public func isDue(today: String) -> Bool { due.isEmpty || due <= today }
+
+    /// Cards for one session: due ones first, then the lowest boxes, shuffled within each group.
+    public static func session(from cards: [Card], count: Int, today: String) -> [Card] {
+        let picked = cards.shuffled()
+            .sorted { a, b in
+                let da = a.isDue(today: today), db = b.isDue(today: today)
+                return da != db ? da : a.box < b.box
+            }
+            .prefix(count)
+        return picked.shuffled()
+    }
+}
+
 /// A Leitner deck in the format of `spanish/vocab.json`: `{"_doc", "words": [{id, es, ru, tag, source,
 /// box, due, seen, wrong, note?}], ...}`. The term key is the language code ("es" or "en").
 /// Everything else in the file is kept as it was.
@@ -110,6 +141,42 @@ public struct VocabStore: Sendable {
     }
 
     public var count: Int { ((try? load())?["words"]?.arrayValue ?? []).count }
+
+    // MARK: Reviewing
+
+    /// Days until the next review for boxes 1…5, as the deck's "_doc" describes.
+    public static let intervals = [1, 2, 4, 8, 16]
+
+    /// Every card in the deck, in file order.
+    public func cards() -> [Card] {
+        ((try? load())?["words"]?.arrayValue ?? []).compactMap { w in
+            guard let id = w["id"]?.intValue, let term = w[language.rawValue]?.stringValue else { return nil }
+            return Card(id: id, language: language, term: term, ru: w["ru"]?.stringValue ?? "",
+                        tag: w["tag"]?.stringValue ?? "", source: w["source"]?.stringValue ?? "",
+                        note: w["note"]?.stringValue ?? "", box: w["box"]?.intValue ?? 1,
+                        due: w["due"]?.stringValue ?? "", seen: w["seen"]?.intValue ?? 0, wrong: w["wrong"]?.intValue ?? 0)
+        }
+    }
+
+    /// Records one answer: right moves the card up a box, wrong sends it back to box 1. Returns the updated card.
+    @discardableResult
+    public func review(id: Int, correct: Bool, today: Date = Date()) throws -> Card? {
+        var root = try load()
+        guard var words = root["words"]?.arrayValue, let i = words.firstIndex(where: { $0["id"]?.intValue == id }) else { return nil }
+        var card = words[i]
+        let box = correct ? min((card["box"]?.intValue ?? 1) + 1, Self.intervals.count) : 1
+        let days = correct ? Self.intervals[box - 1] : Self.intervals[0]
+        card["box"] = .int(box)
+        card["due"] = .string(Self.dayString(Calendar.current.date(byAdding: .day, value: days, to: today) ?? today))
+        card["seen"] = .int((card["seen"]?.intValue ?? 0) + 1)
+        if !correct { card["wrong"] = .int((card["wrong"]?.intValue ?? 0) + 1) }
+        words[i] = card
+        root["words"] = .array(words)
+        try save(root)
+        return cards().first { $0.id == id }
+    }
+
+    public static func today(_ date: Date = Date()) -> String { dayString(date) }
 
     private func load() throws -> JSONValue {
         guard FileManager.default.fileExists(atPath: url.path) else {

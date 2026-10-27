@@ -5,6 +5,7 @@ struct TranslatorView: View {
     @ObservedObject var state: AppState
     var onClose: () -> Void
     var onResize: () -> Void
+    var onStudy: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,6 +30,9 @@ struct TranslatorView: View {
             TextField("Слово или фраза… (⌃⌥T — выделенное)", text: $state.query)
                 .textFieldStyle(.plain)
                 .onSubmit { state.ask(state.query) }
+            Button(action: onStudy) { Image(systemName: "rectangle.stack") }
+                .buttonStyle(.borderless)
+                .help("Колода и карточки (⌘K в меню)")
             Button(action: onResize) { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                 .buttonStyle(.borderless)
                 .help("Размер окна: маленькое, среднее, большое. Можно и потянуть за край")

@@ -60,12 +60,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: TranslatorPanel!
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
+    private let study = StudyState()
+    private var studyWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--demo") { DemoBackend.prepare() }
         panel = TranslatorPanel(rootView: TranslatorView(state: state,
                                                      onClose: { [weak self] in self?.panel.orderOut(nil) },
-                                                     onResize: { [weak self] in self?.panel.nextSize() }))
+                                                     onResize: { [weak self] in self?.panel.nextSize() },
+                                                     onStudy: { [weak self] in self?.showStudy() }))
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "Glosa")
         buildMenu()
@@ -73,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = HotKey { [weak self] in self?.translateSelection() }
 
         if !SelectionGrabber.isTrusted { SelectionGrabber.requestAccess() }
+        if CommandLine.arguments.contains("--study") { showStudy() }
         // `open Glosa.app --args --ask "texto"` translates right away; add `--demo` for canned answers.
         if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 1 < CommandLine.arguments.count {
             panel.showTopRight()
@@ -87,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Показать окно", action: #selector(showPanel), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Перевести буфер обмена", action: #selector(translateClipboard), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Колода и карточки…", action: #selector(showStudy), keyEquivalent: "k").target = self
         menu.addItem(.separator())
         for lang in [Lang.es, .en] {
             let item = NSMenuItem(title: "\(lang.flag) Открыть \(lang.deckName) словарь", action: #selector(openDeck(_:)), keyEquivalent: "")
@@ -101,6 +106,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showPanel() { panel.showTopRight() }
+
+    /// A regular window: it takes the keyboard, so space and the arrow keys answer cards.
+    @objc private func showStudy() {
+        if studyWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 640),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            window.title = "Glosa — колода и карточки"
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: StudyView(state: study))
+            host.sizingOptions = [.minSize]
+            window.contentView = host
+            if !window.setFrameUsingName("GlosaStudy") { window.center() }
+            window.setFrameAutosaveName("GlosaStudy")
+            studyWindow = window
+        }
+        study.reload()
+        NSApp.activate(ignoringOtherApps: true)
+        studyWindow?.makeKeyAndOrderFront(nil)
+    }
 
     @objc private func openDeck(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let lang = Lang(rawValue: raw),
