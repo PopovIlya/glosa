@@ -1,0 +1,12 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# SwiftPM
+.build/
+build/
+.swiftpm/
+
+# macOS
+.DS_Store
